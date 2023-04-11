@@ -1,2 +1,2 @@
 websockets==11.0.1
-Django==3.2.14
+Django>=3.0.0

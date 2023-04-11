@@ -1,6 +1,5 @@
 import asyncio
-import management.commands.utils.arguments as arguments
-import management.commands.utils.main as main
+from django_websockets.server import arguments, main
 import sys, os, django
 
 

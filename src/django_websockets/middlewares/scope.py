@@ -1,9 +1,9 @@
 from typing import Any
-from utils import get_cookie
-from . import Middleware
+from django_websockets.middlewares.utils import get_cookie
+from django_websockets.middlewares import Middleware
 from websockets.server import WebSocketServerProtocol
-from asgiref.sync import sync_to_async
 from django.contrib.sessions.middleware import SessionMiddleware
+from django_websockets.middlewares.utils import database_sync_to_async
 
 
 class Scope(dict):
@@ -19,6 +19,9 @@ class Scope(dict):
 
 
 class ScopeMiddleware(Middleware):
+    """
+    Creates the session scope
+    """
 
     async def __call__(self, websocket: WebSocketServerProtocol, call_next_middleware):
         cookies = get_cookie(websocket)
@@ -31,9 +34,8 @@ class ScopeMiddleware(Middleware):
         scope['COOKIES'] = cookies
 
         sm = SessionMiddleware()
-        await sync_to_async(sm.process_request)(scope)
+        await database_sync_to_async(sm.process_request)(scope)
 
         websocket.scope = scope
-
 
         return await call_next_middleware()

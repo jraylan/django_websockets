@@ -1,7 +1,7 @@
 import asyncio
 from django.core.management import BaseCommand
-from .utils.arguments import WebsocketBindAddress
-from .utils.main import main
+from django_websockets.server.arguments import WebsocketBindAddress
+from django_websockets.server.main import main
 
 
 class Command(BaseCommand):

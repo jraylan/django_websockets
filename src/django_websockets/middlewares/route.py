@@ -1,9 +1,10 @@
-from asgiref.sync import sync_to_async
 import asyncio
-from . import Middleware
+from django_websockets.middlewares import Middleware
 from websockets.server import WebSocketServerProtocol
 from django.conf import settings
 import importlib
+from django_websockets.middlewares.utils import database_sync_to_async
+
 
 class RouteMiddleware(Middleware):
 
@@ -21,7 +22,7 @@ class RouteMiddleware(Middleware):
 
                     )
                 else:
-                    await sync_to_async(
+                    await database_sync_to_async(
                         resolver_match.func
                     )(
                         websocket,

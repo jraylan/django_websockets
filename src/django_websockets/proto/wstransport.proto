@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+service WSGroupManager {
+
+  rpc SendMessage (WSSendMessageRequest) returns (WSResponse) {}
+}
+
+message WSResponse{
+    bool ack = 1;
+}
+
+message WSMessage {
+  string type = 1;
+  optional string message = 2;
+}
+
+message WSSendMessageRequest {
+  string group = 1;
+  WSMessage message = 2;
+}
+

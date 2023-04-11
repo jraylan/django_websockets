@@ -2,6 +2,8 @@ from functools import partial
 import importlib
 from typing import Awaitable, Callable
 from websockets.server import WebSocketServerProtocol
+from django.utils.module_loading import import_string
+
 
 class MiddlewareLoaderIterator:
 
@@ -20,6 +22,7 @@ class MiddlewareLoaderIterator:
     def next(self):
         return self.__next__()
 
+
 class MiddlewareLoader:
 
     def __len__(self):
@@ -28,8 +31,7 @@ class MiddlewareLoader:
 
     def __getitem__(self, index):
         from django.conf import settings
-        module_path = getattr(settings, 'WEBSOCKET_MIDDLEWARE')[index].split('.')
-        return getattr(importlib.import_module('.'.join(module_path[:-1])), module_path[-1])
+        return import_string(getattr(settings, 'WEBSOCKET_MIDDLEWARE')[index])
     
     def __iter__(self):
         return MiddlewareLoaderIterator(self)
@@ -39,9 +41,13 @@ active_middlewares = MiddlewareLoader()
 
 
 class Middleware(object):
+    '''
+        Base middleware class
+    '''
 
     async def __call__(self, websocket: WebSocketServerProtocol, call_next_middleware: Awaitable[Callable[[], "Middleware"]]):
-        raise NotImplementedError("")
+        raise NotImplementedError(
+            "A middleware must implement a async method __call__(Self@Middleware, WebSocketServerProtocol, Awaitable[() -> Middleware])")
 
 
 async def call_middleware_stack(websocket: WebSocketServerProtocol, idx=0):

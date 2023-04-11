@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django_websockets"
+version = "0.0.1"
+authors = [
+  { name="JRaylan", email="jeffersonraylan@example.com" },
+]
+description = "A concept proof project to use websockets as a websocket backend for django as a alternative for channels"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Unix",
+]
+dependencies = [
+  "websockets == 11.0.1",
+  "Django >= 3.0.0",
+  "grpcio >= 1.53.0",
+  "protobuf >= 4.22.1"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/jraylan/django_websockets"
+"Bug Tracker" = "https://github.com/jraylan/django_websockets/issues"
