@@ -3,6 +3,7 @@ from django_websockets.middlewares.utils import get_cookie
 from django_websockets.middlewares import Middleware
 from websockets.server import WebSocketServerProtocol
 from django.contrib.sessions.middleware import SessionMiddleware
+
 from django_websockets.middlewares.utils import database_sync_to_async
 
 

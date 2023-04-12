@@ -1,12 +1,14 @@
-from asyncio import futures
+from concurrent import futures
+import traceback
+
+from django_websockets.utils import Atom
 from django_websockets.groups import GroupMessage
 from django_websockets.groups.backends import BaseGroupBackend
 from django_websockets.transport.proto import wstransport_pb2_grpc, wstransport_pb2
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
-from typing import Any
-import asyncio
+from typing import Any, Union
 import grpc.aio as grpc
 import re
 
@@ -78,9 +80,14 @@ class TransportManager:
 
     def __iter__(self):
         return self.__backends.__iter__()
-        
 
-class BaseTransportLayer(object):    
+
+SERVER = Atom('SERVER')
+CLIENT = Atom('CLIENT')
+
+
+class BaseTransportLayer(object):
+
     group_name_regex = re.compile(r"^[a-zA-Z\d\-_.]+$")
     invalid_name_error = (
         "{} name must be a valid unicode string containing only ASCII "
@@ -90,6 +97,16 @@ class BaseTransportLayer(object):
     def __init__(self, backend: BaseGroupBackend, config: TransportConfig):
         self.__backend = backend
         self.__config = config
+        self.__role: Atom = CLIENT
+
+    @property
+    def role(self):
+        return self.__role
+    
+    @role.setter
+    def role(self, role: Atom):
+        if role in [SERVER, CLIENT]:
+            self.__role = role   
 
     @property
     def config(self) -> TransportConfig:
@@ -102,14 +119,23 @@ class BaseTransportLayer(object):
 
     async def group_add(self, group, consumer):
         assert self.valid_group_name(group), "Invalid group name"
-        self.backend.group_add(group, consumer)
+        await self.backend.group_add(group, consumer)
 
     async def group_discard(self, group, consumer):
-        self.backend.remove_group(group, consumer)
+        await self.backend.remove_group(group, consumer)
 
-    async def group_send(self, group, message):
+    async def group_send(self, group: str, message: Union[dict, GroupMessage]):
+        # Ensure that message is a GroupMessage
+        if not isinstance(message, GroupMessage):
+            message = GroupMessage(**message)
+
         await self.backend.group_message(group, message)
 
+    def match_type_and_length(self, name):
+        if isinstance(name, str) and (len(name) < 100):
+            return True
+        return False
+    
     def valid_group_name(self, name):
         if self.match_type_and_length(name):
             if bool(self.group_name_regex.match(name)):
@@ -118,29 +144,28 @@ class BaseTransportLayer(object):
             "Group name must be a valid unicode string containing only ASCII "
             + "alphanumerics, hyphens, or periods."
         )
-    
+
+    @property
+    def as_server(self):
+        self.__role = SERVER
+        return self
+
+    @property
+    def as_client(self):
+        self.__role = CLIENT
+        return self
+
     async def __call__(self):
         raise NotImplementedError("This transport manager is not a callable corroutine")
 
 
 
-class gRPCTransportLayerType:...
-
-
-SERVER = gRPCTransportLayerType()
-CLIENT = gRPCTransportLayerType()
-
-
 class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManagerServicer):
 
     #backend: BaseGroupBackend
-    __role = CLIENT
     __connection = None
     __stub = None
 
-    @property
-    def stub(self):
-        return self.__stub
 
     @property
     def num_connections(self):
@@ -154,48 +179,75 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
     def graceful(self):
         return self.config.num_connections or 0
     
-    def SendMessage(self, request, context):
-        print(request, context)
+    async def SendMessage(self, request, context):
+        message = GroupMessage(
+            request.message.type,
+            request.message.message
+        )
+        try:
+            await super().group_send(request.group, message)
+        except:
+            traceback.print_exc()
+            return wstransport_pb2.WSResponse(ack=False)
+        else:
+            return wstransport_pb2.WSResponse(ack=True)
 
     @property
-    def conenction(self):
+    def stub(self):
+        # The connection and stub are created lazily.
+        # It's necessary to access self.connection to ensure
+        # it's instantiate
+        self.connection
+        return self.__stub
+    
+    @property
+    def connection(self):
         if self.__connection:
             return self.__connection
         
-        if self.__role == SERVER:
-            self.__connection = server = grpc.server(futures.ThreadPoolExecutor(
-                max_workers=self.num_connections))
+        if self.role is SERVER:
+            self.__connection = grpc.server(
+                futures.ThreadPoolExecutor(max_workers=self.num_connections))
+            self.__connection.add_insecure_port(self.address)
             self.__stub = wstransport_pb2_grpc.add_WSGroupManagerServicer_to_server(
                 self, self.__connection)
+        else:
+            self.__connection = grpc.insecure_channel(self.address)
+            self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(self.__connection)
+        return self.__connection
+    
 
-            server.add_secure_port(self.address)
-            return server
-        
-        self.__connection = grpc.insecure_channel(self.address)
-        self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(self.__connection)
-        return self.conenction
+    async def group_send(self, group:str, message:Union[dict, GroupMessage]):
+        '''
+        Broadcast a message 
+        '''
 
-    async def group_send(self, group, message):
-        if self.__role == SERVER:
-            return await super().group_message(group, GroupMessage(message['type'], message['message']))
-        
+        # If its a SERVER, we don't need to call RPC
+        # (What about horizontaly scaling???)
+        if self.role is SERVER:
+            return await super().group_send(group, message)
+                
         await self.stub.SendMessage(
-            wstransport_pb2.WSMessage(
-                **message
+            wstransport_pb2.WSSendMessageRequest(
+                group=group,
+                message=wstransport_pb2.WSMessage(
+                    **message
+                )
             )
         )
-
+    
     async def __call__(self):
-        self.__role = SERVER
-        await self.connection.start()
-        await self.connection.wait_for_termination()
+        if self.role is SERVER:
+            self.__connection = None
+            await self.connection.start()
+            await self.connection.wait_for_termination()
 
     async def stop(self):
-        if self.__role is SERVER:
-            self.conenction.stop()
+        if self.role is SERVER:
+            self.connection.stop()
 
 
-def get_channel_layer(using='default'):
+def get_channel_layer(using='default') -> BaseTransportLayer:
     """
     Returns a channel layer by alias, or None if it is not configured.
     """

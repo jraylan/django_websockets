@@ -11,15 +11,16 @@ class RouteMiddleware(Middleware):
     async def __call__(self, websocket: WebSocketServerProtocol, call_next_middleware):
         module = importlib.import_module(settings.WEBSOCKET_ROUTE_MODULE)
 
+        found = False
         for pattern in module.urlpatterns:
             resolver_match = pattern.resolve(websocket.path)
             if resolver_match:
+                found = True
                 if asyncio.iscoroutinefunction(resolver_match.func):
                     await resolver_match.func(
                         websocket,
                         *resolver_match.args,
                         **resolver_match.kwargs
-
                     )
                 else:
                     await database_sync_to_async(
@@ -29,5 +30,10 @@ class RouteMiddleware(Middleware):
                         *resolver_match.args,
                         **resolver_match.kwargs
                     )
+        if not found:
+            print(websocket.path)
+            for p in module.urlpatterns:
+                print(p)
+            return await websocket.close(1003, "not_found")
 
         return await call_next_middleware()

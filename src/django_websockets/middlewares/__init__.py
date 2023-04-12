@@ -1,5 +1,4 @@
 from functools import partial
-import importlib
 from typing import Awaitable, Callable
 from websockets.server import WebSocketServerProtocol
 from django.utils.module_loading import import_string

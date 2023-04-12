@@ -162,5 +162,3 @@ parser.add_argument('-b', '--bind', nargs=1, required=True, type=BindType())
 parser.add_argument('-s', '--settings', nargs=1, required=True,
                     type=RegexType(r'([a-zA-Z0-9_](\.[a-zA-Z0-9_]){0,})'))
 
-
-args = parser.parse_args()

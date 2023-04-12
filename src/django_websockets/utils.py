@@ -1,4 +1,3 @@
-import importlib
 from reprlib import recursive_repr
 from typing import Callable, Awaitable
 from asyncio import iscoroutinefunction
@@ -68,3 +67,27 @@ class async_partial:
         self.func = func
         self.args = args
         self.keywords = kwds
+
+class Atom:
+    slots = ('value',)
+    def __setattr__(self, attr, value):
+        return
+
+    def __init__(self, value):
+        super().__setattr__('value', str(value))
+
+    def __get__(self, __instance, __owner=None):
+        return self.value
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.value == other
+        return self is other
+
+    def __req__(self, other):
+        if isinstance(other, str):
+            return self.value == other
+        return self is other
+    
+    def __repr__(self) -> str:
+        return f'<django_websockets.Atom {self.value} >'
