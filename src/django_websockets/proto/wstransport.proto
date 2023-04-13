@@ -12,11 +12,11 @@ message WSResponse{
 message WSMessage {
   string type = 1;
   optional string message = 2;
+  optional string params = 3;
 }
 
 message WSSendMessageRequest {
   string group = 1;
   WSMessage message = 2;
-  optional string params = 3;
 }
 
