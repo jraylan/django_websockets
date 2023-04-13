@@ -1,4 +1,6 @@
 from typing import Any
+
+from django.conf import settings
 from django_websockets.middlewares.utils import get_cookie
 from django_websockets.middlewares import Middleware
 from websockets.server import WebSocketServerProtocol
@@ -25,17 +27,17 @@ class ScopeMiddleware(Middleware):
     """
 
     async def __call__(self, websocket: WebSocketServerProtocol, call_next_middleware):
-        cookies = get_cookie(websocket)
-        if not cookies.get('sessionid'):
-            print('not authorized')
 
         scope = Scope()
 
         scope['HEADERS'] = websocket.request_headers
-        scope['COOKIES'] = cookies
+        scope['COOKIES'] = get_cookie(websocket)
 
         sm = SessionMiddleware()
         await database_sync_to_async(sm.process_request)(scope)
+
+        session_key = scope['COOKIES'].get(settings.SESSION_COOKIE_NAME)
+        scope['session'] = sm.SessionStore(session_key)
 
         websocket.scope = scope
 

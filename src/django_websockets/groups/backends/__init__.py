@@ -91,5 +91,6 @@ class BaseGroupBackend(object):
                 "Empty group listener {}".format(name))
             return
 
+
         for queue in self.__group_listeners[group_name]:
             await queue.put(message)

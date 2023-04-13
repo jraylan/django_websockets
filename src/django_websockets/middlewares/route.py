@@ -16,6 +16,11 @@ class RouteMiddleware(Middleware):
             resolver_match = pattern.resolve(websocket.path)
             if resolver_match:
                 found = True
+                websocket.scope['url_route'] = {
+                    'url': websocket.path,
+                    'args': resolver_match.args,
+                    'kwargs': resolver_match.kwargs
+                }
                 if asyncio.iscoroutinefunction(resolver_match.func):
                     await resolver_match.func(
                         websocket,

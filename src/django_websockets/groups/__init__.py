@@ -1,12 +1,13 @@
-from typing import Union
+from typing import Union, Optional
 
 
 class GroupMessage(object):
-    slots = ('type', 'message')
+    slots = ('type', 'message', 'params')
 
-    def __init__(self, type: str, message: Union[str, bytes]):
+    def __init__(self, type: str, message: Union[str, bytes], params:Optional[Union[str, bytes]]=None):
         self.type = type
         self.message = message
+        self.params = params
 
     def keys(self):
         return self.slots
@@ -14,7 +15,8 @@ class GroupMessage(object):
     def values(self):
         return [
             self.type,
-            self.message
+            self.message,
+            self.params
         ]
     
     def __getitem__(self, item):

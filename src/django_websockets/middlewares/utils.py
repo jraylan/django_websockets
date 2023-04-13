@@ -1,12 +1,25 @@
 from asgiref.sync import SyncToAsync
 from django.db import close_old_connections
-from http.cookies import SimpleCookie
+from http.cookies import _unquote
 from websockets.server import WebSocketServerProtocol
 
 
 def get_cookie(websocket: WebSocketServerProtocol):
-    cookies = websocket.request_headers.get('Cookie')
-    return SimpleCookie(cookies or "")
+    cookies_data = {}
+
+    for cookie in websocket.request_headers.get('Cookie').split(';'):
+        if "=" in cookie:
+            key, val = cookie.split('=', 1)
+        else:
+            key, val = "", cookie
+        key = key.strip()
+        if key:
+            val = val.strip()
+            val = val.split('\n')[0]
+            val = _unquote(val)
+            cookies_data[key] = val
+
+    return cookies_data
 
 
 class DatabaseSyncToAsync(SyncToAsync):

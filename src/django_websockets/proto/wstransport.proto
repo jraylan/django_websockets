@@ -17,5 +17,6 @@ message WSMessage {
 message WSSendMessageRequest {
   string group = 1;
   WSMessage message = 2;
+  optional string params = 3;
 }
 

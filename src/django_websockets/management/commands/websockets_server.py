@@ -6,7 +6,7 @@ from django_websockets.server.main import main
 
 class Command(BaseCommand):
 
-    help = 'Check Models'
+    help = 'Websockets Server'
 
     def add_arguments(self, parser):
         parser.add_argument('-b', '--bind',

@@ -19,9 +19,11 @@ class WSResponse(_message.Message):
     def __init__(self, ack: bool = ...) -> None: ...
 
 class WSSendMessageRequest(_message.Message):
-    __slots__ = ["group", "message"]
+    __slots__ = ["group", "message", "params"]
     GROUP_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
     group: str
     message: WSMessage
-    def __init__(self, group: _Optional[str] = ..., message: _Optional[_Union[WSMessage, _Mapping]] = ...) -> None: ...
+    params: str
+    def __init__(self, group: _Optional[str] = ..., message: _Optional[_Union[WSMessage, _Mapping]] = ..., params: _Optional[str] = ...) -> None: ...

@@ -2,6 +2,7 @@ import inspect
 import traceback
 from typing import AsyncIterable, Awaitable, Callable, Dict, Iterable, Set, Type, Union
 import warnings
+import websockets
 from websockets.server import WebSocketServerProtocol
 from websockets.typing import Data
 import asyncio
@@ -42,23 +43,20 @@ class BaseConsumer(object):
 
     async def __process(self, message: GroupMessage):
         if not isinstance(message, GroupMessage):
-            warnings.warn(
-                "Consumer '{}' received a group message that is not a instance of 'GroupMessage'"
-                .format(
-                    self.__class__.__name__
-                ))
-            return
+            try:
+                message = GroupMessage(**message)
+            except:
+                warnings.warn(
+                    "Consumer '{}' received a group message that is not a instance of 'GroupMessage'"
+                    .format(
+                        self.__class__.__name__
+                    ))
+                return
 
         method = getattr(self, message.type, None)
         if not method or \
            not inspect.iscoroutinefunction(method) \
            or len(inspect.signature(method).parameters.keys()) != 1:
-
-            print(method)
-            print(inspect.iscoroutinefunction(method))
-            print(len(inspect.signature(method).parameters))
-            print(len(inspect.signature(method).parameters.keys()))
-            print(inspect.signature(method).parameters.keys())
             warnings.warn(
                 "Consumer '{}' received a group message of type '{}' but doesn't have a async method with this name that receives a Union[str|bytes]"
                 .format(
@@ -66,10 +64,10 @@ class BaseConsumer(object):
                     message.type
                 ))
             return
-        content = message.message
         try:
-            await method(content)
+            await method({**message})
         except Exception as e:
+            traceback.print_exc()
             warnings.warn(
                 "a unhandled exception ocurred while processing message of type '{}' on consummer '{}':\n\t{}"
                 .format(self.__class__.__name__,
@@ -86,6 +84,7 @@ class BaseConsumer(object):
         async with self.__group_lock:
             if self.__closing:
                 # Consumer is closing, so return false to make the queue to be removed
+                warnings.warn('Trying go add a closing connection to group.')
                 return False
             
             # check if already listening
@@ -129,7 +128,7 @@ class BaseConsumer(object):
 
         async with self.__group_lock:
             tasks = [self._stop_listen_to_group(group_name)
-                     for group_name in self.__group_listeners]
+                     for group_name in self.__group_queues]
             
         await asyncio.gather(
             *tasks,
@@ -177,12 +176,16 @@ class BaseConsumer(object):
                         websocket.recv(),
                         timeout=0.1
                     )
-                except asyncio.TimeoutError:
+                except (websockets.ConnectionClosedError, websockets.ConnectionClosedOK, websockets.ConnectionClosed):
+                    return
+                except (asyncio.TimeoutError, asyncio.CancelledError):
                     continue
+                except:
+                    traceback.print_exc()
                 else:
                     await self.receive(message)
             except:
-                return
+                traceback.print_exc()
 
     async def __process_group(self, group_name):
         try:
@@ -197,10 +200,13 @@ class BaseConsumer(object):
                 timeout=1
             )
             await self.__process(message)
-            print(message)
             
         except asyncio.TimeoutError:
             pass
+        except asyncio.CancelledError:
+            return
+        except:
+            traceback.print_exc()
         
 
     async def __recv_group(self):
@@ -213,40 +219,44 @@ class BaseConsumer(object):
             running_groups: Set[str] = set()
 
             while not self.__closing:
-                # Make a copy of all current groups name
-                async with self.__group_lock:
-                    for group_name in self.__group_queues.keys():
-                        running_groups.add(group_name)
+                try:
+                    # Make a copy of all current groups name
+                    async with self.__group_lock:
+                        for group_name in self.__group_queues.keys():
+                            running_groups.add(group_name)
 
-                if not running_groups:
-                    await asyncio.sleep(0.1)
-                    continue
+                    if not running_groups:
+                        await asyncio.sleep(0.1)
+                        continue
 
-                # Execute ther recv for every group
-                await asyncio.gather(
-                    *[self.__process_group(group_name) for group_name in running_groups],
-                    return_exceptions=False)
+                    # Execute ther recv for every group
+                    await asyncio.gather(
+                        *[self.__process_group(group_name) for group_name in running_groups],
+                        return_exceptions=False)
 
-                # Get the list of groups that needs to be removed
-                async with self.__group_lock:
-                    groups_to_remove = [
-                        group_name
-                        for group_name in running_groups
-                        if group_name not in self.__group_queues
-                    ]
+                    # Get the list of groups that needs to be removed
+                    async with self.__group_lock:
+                        groups_to_remove = [
+                            group_name
+                            for group_name in running_groups
+                            if group_name not in self.__group_queues
+                        ]
 
-                if groups_to_remove:
-                    # Cleanup groups
-                    for removed_group in await asyncio.gather(*[
-                        self._stop_listen_to_group(group_name) for group_name in groups_to_remove],
-                        return_exceptions=False):
+                    if groups_to_remove:
+                        # Cleanup groups
+                        for removed_group in await asyncio.gather(*[
+                            self._stop_listen_to_group(group_name) for group_name in groups_to_remove],
+                            return_exceptions=False):
 
-                        running_groups.remove(removed_group)
-                    
+                            running_groups.remove(removed_group)
+                except asyncio.CancelledError:
+                    pass
+                except:
+                    traceback.print_exc()
+                        
         except:
             traceback.print_exc()
         finally:
-            print("stoping listening for group")
             # Stores the groups to prevent deathlock
             async with self.__group_lock:
                 groups = list(self.__group_queues.keys())
@@ -262,16 +272,24 @@ class BaseConsumer(object):
             raise TypeError(
                 "method connect(scope, *args, **kwargs) must be a corroutine")
         self.__closing = False
-        await self.connect(websocket.scope, *args, **kwargs)
-        await asyncio.gather(
-            self.__recv(websocket),
-            self.__recv_group(),
-            return_exceptions=False
-        )
-        await self.close()
+        self.scope = websocket.scope
+        group_task = asyncio.create_task(self.__recv_group())
+        try:
+            await self.connect()
+            await self.__recv(websocket)
+        finally:
+            traceback.print_exc()
+            group_task.cancel()
+            await self.close()
+            while not group_task.done():
+                await asyncio.sleep(0.1)
 
-    async def __send(self, websocket: WebSocketServerProtocol, message: Union[Data, Iterable[Data], AsyncIterable[Data]]):
-        await websocket.send(message)
+    # Is it necessary?
+    # Kept for channel compatibility
+    async def accept(self): ...
+        
+    async def __send(self, websocket: WebSocketServerProtocol, text_data: Union[Data, Iterable[Data], AsyncIterable[Data]]):
+        await websocket.send(text_data)
 
     async def send(
         message: Union[Data, Iterable[Data], AsyncIterable[Data]]): ...
