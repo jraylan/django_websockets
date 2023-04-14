@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
 from typing import Any, Union
+import grpc as sync_grpc
 import grpc.aio as grpc
 import re
 
@@ -212,7 +213,7 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
             self.__stub = wstransport_pb2_grpc.add_WSGroupManagerServicer_to_server(
                 self, self.__connection)
         else:
-            self.__connection = grpc.insecure_channel(self.address)
+            self.__connection = sync_grpc.insecure_channel(self.address)
             self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(self.__connection)
         return self.__connection
     
@@ -226,8 +227,8 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
         # (What about horizontaly scaling???)
         if self.role is SERVER:
             return await super().group_send(group, message)
-                
-        await self.stub.SendMessage(
+        
+        self.stub.SendMessage(
             wstransport_pb2.WSSendMessageRequest(
                 group=group,
                 message=wstransport_pb2.WSMessage(
