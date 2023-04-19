@@ -85,6 +85,7 @@ class TransportManager:
 
 SERVER = Atom('SERVER')
 CLIENT = Atom('CLIENT')
+FORWARDER = Atom('FORWARDER')
 
 
 class BaseTransportLayer(object):
@@ -99,6 +100,8 @@ class BaseTransportLayer(object):
         self.__backend = backend
         self.__config = config
         self.__role: Atom = CLIENT
+        self._namespace = ""
+        self._workers_queue = None
 
     @property
     def role(self):
@@ -106,7 +109,7 @@ class BaseTransportLayer(object):
     
     @role.setter
     def role(self, role: Atom):
-        if role in [SERVER, CLIENT]:
+        if role in [SERVER, CLIENT, FORWARDER]:
             self.__role = role   
 
     @property
@@ -147,6 +150,11 @@ class BaseTransportLayer(object):
         )
 
     @property
+    def as_forwarder(self):
+        self.__role = FORWARDER
+        return self
+
+    @property
     def as_server(self):
         self.__role = SERVER
         return self
@@ -156,9 +164,47 @@ class BaseTransportLayer(object):
         self.__role = CLIENT
         return self
 
-    async def __call__(self):
+    async def __call__(self, namespace=None, workers_queue=None):
         raise NotImplementedError("This transport manager is not a callable corroutine")
 
+
+
+class gRPCRoudRobStub(object):
+
+    def __init__(self, address, workers_queue):
+        self.address = address
+        self._workers_queue = workers_queue
+        self._stubs = {}
+
+
+    def get_namespaced_address(self, namespace):
+        address = self.address
+        if namespace != "master":
+            if address.endswith('.socket'):
+                address = address[:-6]
+                address = f'{address}{namespace}.socket'
+            elif address.endswith('.sock'):
+                address = address[:-4]
+                address = f'{address}{namespace}.sock'
+            else:
+                address = f'{address}{namespace}.socket'
+        return address
+    
+    async def SendMessage(self, request, context):
+        if self._workers_queue:
+            for worker in self._workers_queue:
+                if worker in self._stubs:
+                    stub = self._stubs[worker]
+                else:
+                    address = self.get_namespaced_address(worker)
+                    conn = grpc.insecure_channel(address)
+                    stub = wstransport_pb2_grpc.WSGroupManagerStub(conn)
+                    self._stubs[worker] = stub
+                await stub.SendMessage(request)
+                    
+            return wstransport_pb2.WSResponse(ack=True)
+
+        return wstransport_pb2.WSResponse(ack=False)
 
 
 class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManagerServicer):
@@ -167,14 +213,24 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
     __connection = None
     __stub = None
 
-
     @property
     def num_connections(self):
         return self.config.num_connections or 20
     
     @property
     def address(self):
-        return self.config.address or "unix:/tmp/rpc.socket"
+        address = self.config.address or "unix:/tmp/rpc.socket"
+        if self.role is SERVER:
+            if self._namespace and self._namespace != "master":
+                if address.endswith('.socket'):
+                    address = address[:-6]
+                    address = f'{address}{self._namespace}.socket'
+                elif address.endswith('.sock'):
+                    address = address[:-4]
+                    address = f'{address}{self._namespace}.sock'
+                else:
+                    address = f'{address}{self._namespace}.socket'
+        return address
     
     @property
     def graceful(self):
@@ -185,13 +241,26 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
             request.message.type,
             request.message.message
         )
+
         try:
-            await super().group_send(request.group, message)
+            if self.role is FORWARDER:
+                return await self.forward_stub.SendMessage(request, context)
+            else:
+                await super().group_send(request.group, message)
         except:
             traceback.print_exc()
             return wstransport_pb2.WSResponse(ack=False)
         else:
             return wstransport_pb2.WSResponse(ack=True)
+
+    @property
+    def forward_stub(self):
+        if self._workers_queue:
+            if not hasattr(self, '_forward_stub'):
+                address = self.config.address or "unix:/tmp/rpc.socket"
+                self._forward_stub = gRPCRoudRobStub(
+                    address, self._workers_queue)
+        return getattr(self, '_forward_stub', None)
 
     @property
     def stub(self):
@@ -206,7 +275,7 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
         if self.__connection:
             return self.__connection
         
-        if self.role is SERVER:
+        if self.role in [SERVER, FORWARDER]:
             self.__connection = grpc.server(
                 futures.ThreadPoolExecutor(max_workers=self.num_connections))
             self.__connection.add_insecure_port(self.address)
@@ -228,23 +297,38 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
         if self.role is SERVER:
             return await super().group_send(group, message)
         
-        self.stub.SendMessage(
-            wstransport_pb2.WSSendMessageRequest(
-                group=group,
-                message=wstransport_pb2.WSMessage(
-                    **message
-                )
-            )
-        )
+        elif self.role is FORWARDER:
+            self.forward_stub.SendMessage(
+                wstransport_pb2.WSSendMessageRequest(
+                    group=group,
+                    message=wstransport_pb2.WSMessage(
+                        **message
+                    )))
+        
+        else:
+            self.stub.SendMessage(
+                wstransport_pb2.WSSendMessageRequest(
+                    group=group,
+                    message=wstransport_pb2.WSMessage(
+                        **message
+                    )))
     
-    async def __call__(self):
-        if self.role is SERVER:
-            self.__connection = None
-            await self.connection.start()
-            await self.connection.wait_for_termination()
+    async def __call__(self, namespace, workers_queue=None):
+        try:
+            self._namespace = namespace
+            self._workers_queue = workers_queue
+            if self.role in [SERVER, FORWARDER]:
+                self.__connection = None
+                await self.connection.start()
+                await self.connection.wait_for_termination()
+                return 'ok'
+
+            return self.role
+        except Exception as e:
+            return e
 
     async def stop(self):
-        if self.role is SERVER:
+        if self.role in [SERVER, FORWARDER]:
             self.connection.stop()
 
 

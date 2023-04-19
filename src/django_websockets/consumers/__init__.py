@@ -176,14 +176,12 @@ class BaseConsumer(object):
                         websocket.recv(),
                         timeout=0.1
                     )
-                except (websockets.ConnectionClosedError, websockets.ConnectionClosedOK, websockets.ConnectionClosed):
-                    return
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     continue
-                except:
-                    traceback.print_exc()
                 else:
                     await self.receive(message)
+            except websockets.ConnectionClosed:
+                return
             except:
                 traceback.print_exc()
 
@@ -277,6 +275,8 @@ class BaseConsumer(object):
         try:
             await self.connect()
             await self.__recv(websocket)
+        except StopConsumer:
+            pass            
         finally:
             traceback.print_exc()
             group_task.cancel()

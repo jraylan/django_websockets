@@ -7,7 +7,7 @@ from websockets.server import WebSocketServerProtocol
 def get_cookie(websocket: WebSocketServerProtocol):
     cookies_data = {}
 
-    for cookie in websocket.request_headers.get('Cookie').split(';'):
+    for cookie in websocket.request_headers.get('Cookie', "").split(';'):
         if "=" in cookie:
             key, val = cookie.split('=', 1)
         else:

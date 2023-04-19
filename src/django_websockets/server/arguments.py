@@ -29,6 +29,21 @@ class WebsocketBindAddress(object):
     @property
     def is_unix(self):
         return self.__is_unix
+    
+    def get_namespaced_address(self, namespace):
+        address = self.address
+        if namespace and self.is_unix and namespace != "master":
+            if address.endswith('.socket'):
+                address = address[:-6]
+                address = f'{address}{namespace}.socket'
+            elif address.endswith('.sock'):
+                address = address[:-4]
+                address = f'{address}{namespace}.sock'
+            else:
+                address = f'{address}{namespace}.socket'
+
+        return address
+
 
     def __str__(self):
         if self.port:
@@ -154,6 +169,14 @@ class RegexType(object):
         )
 
 
+def workers(val):
+    val = int(val)
+    if val <1:
+        raise argparse.ArgumentTypeError(
+            "%s is an invalid positive int value" % val)
+    return val
+
+
 parser = argparse.ArgumentParser(
     prog='Websocket',
     description='A websocket server')
@@ -161,4 +184,5 @@ parser = argparse.ArgumentParser(
 parser.add_argument('-b', '--bind', nargs=1, required=True, type=BindType())
 parser.add_argument('-s', '--settings', nargs=1, required=True,
                     type=RegexType(r'([a-zA-Z0-9_](\.[a-zA-Z0-9_]){0,})'))
+parser.add_argument('-w', '--workers', nargs=1, required=True, type=workers)
 
