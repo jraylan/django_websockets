@@ -44,4 +44,5 @@ jobs:
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          publisher: GitHub
           password: ${{ secrets.PYPI_API_TOKEN }}
