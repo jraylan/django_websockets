@@ -117,11 +117,11 @@ class ChatConsumer(BaseConsumer):
 
 #### Using TCP:
 ```bash
-python3 manage.py websockets_server -b localhost:7000
+python3 manage.py websockets_server -b localhost:7000 -w 4
 ```
 
 #### Using Unix:
 ```bash
-python3 manage.py websockets_server -b unix:/var/run/websockets.sock
+python3 manage.py websockets_server -b unix:/var/run/websockets.sock -w 4
 ```
 
