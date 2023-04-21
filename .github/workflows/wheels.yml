@@ -1,5 +1,6 @@
 name: Build wheels
-
+permissions:
+  id-token: write
 on:
   push:
     tags:
