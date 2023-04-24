@@ -1,14 +1,17 @@
 import asyncio
-from multiprocessing import Manager
+from multiprocessing import Event, Manager
+import multiprocessing
 import re
+import time
 import traceback
 from typing import Dict
+import signal
 import websockets
+import sys
 from django_websockets.middlewares.utils import database_sync_to_async
 import django_websockets.server.arguments as arguments
-from django_websockets.server.horchestration import RoundRobQueue
 from django_websockets.server.handler import connection_handler, master_handler
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import queues
 
 # Fix multiprocessing error
@@ -60,28 +63,43 @@ def __main(bind: arguments.WebsocketBindAddress, handler, settings=None, namespa
         
         print(f'running {namespace} at {target}')
 
-        async def run_channel_layer(layer):
+        def run_channel_layer(layer):
             if namespace == 'master':
-                return await get_channel_layer(using=layer).as_forwarder(namespace=namespace, workers_queue=workers_list)
+                return asyncio.ensure_future(get_channel_layer(using=layer).as_forwarder(namespace=namespace, workers_queue=workers_list))
             else:
-                return await get_channel_layer(using=layer).as_server(namespace=namespace)
-            
-        async with server:
-            result = await asyncio.gather(*[
-                run_channel_layer(layer)
-                for layer in channel_layers
-            ])
+                return asyncio.ensure_future(get_channel_layer(using=layer).as_server(namespace=namespace))
 
-        print(result)
+        try:
+            async with server:
+
+                futures_stack = [
+                    run_channel_layer(layer)
+                    for layer in channel_layers
+                ]
+                await asyncio.wait(futures_stack, return_when=asyncio.FIRST_COMPLETED)
+
+        except asyncio.CancelledError:
+            pass
+
         print(f"leaving {namespace}...")
-    if namespace:
+
+    has_event_loop = False
+
+    try:
+        asyncio.get_running_loop()
+        has_event_loop = True
+    except:
+        pass
+
+
+    if namespace and not has_event_loop:
         try:
             return asyncio.run(run())
         except:
             traceback.print_exc()
             raise
-    
-    run()
+        
+    return run()
 
 
 def _start_worker(loop, executor, bind, handler, settings, namespace, workers_list):
@@ -97,12 +115,11 @@ def _start_worker(loop, executor, bind, handler, settings, namespace, workers_li
     )
 
 
-async def __start(loop, bind: arguments.WebsocketBindAddress, settings, workers: int):
+async def __start(loop:asyncio.BaseEventLoop, bind: arguments.WebsocketBindAddress, settings, workers: int, stop_event:Event):
 
     from django.conf import settings
 
     workers_map: Dict[str, asyncio.Future] = {}
-    num_workers = workers +1
 
     master_worker: asyncio.Future = None
     master_worker_namespace = 'master'
@@ -111,20 +128,19 @@ async def __start(loop, bind: arguments.WebsocketBindAddress, settings, workers:
     process_manager = Manager()
 
     workers_list = process_manager.list(workers_map.keys())
-    
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        while True:
+    try:
+        while not stop_event.get('stoped'):
             # has master started?
             if master_worker:
                 # isn't master running?
                 if master_worker.cancelled() or master_worker.done():
-                    master_worker = _start_worker(
-                        loop, executor, bind, master_handler(bind, workers_list), settings, master_worker_namespace, workers_list)
+                    master_worker = loop.create_task(
+                        __main(bind, master_handler(bind, workers_list), settings, master_worker_namespace, workers_list))
                     continue
             else:
                 # start master
-                master_worker = _start_worker(
-                    loop, executor, bind, master_handler(bind, workers_list), settings, master_worker_namespace, workers_list)
+                master_worker = loop.create_task(
+                    __main(bind, master_handler(bind, workers_list), settings, master_worker_namespace, workers_list))
                 continue
 
             for i in range(workers):
@@ -139,13 +155,21 @@ async def __start(loop, bind: arguments.WebsocketBindAddress, settings, workers:
 
             if namespace:
                 workers_map[namespace] = _start_worker(
-                    loop, executor, bind, connection_handler, settings, namespace, workers_list)
+                    loop, None, bind, connection_handler, settings, namespace, workers_list)
             else:
                 for namespace in workers_map.keys():
                     if namespace not in workers_list:
                         workers_list.append(namespace)
 
                 await asyncio.sleep(2)
+    except asyncio.CancelledError:
+        pass
+
+    print("Canceling master")
+    for n, w in workers_map.items():
+        print("Canceling {}".format(n))
+        w.cancel()
+    master_worker.cancel()
 
 
 
@@ -159,7 +183,36 @@ def main(bind: arguments.WebsocketBindAddress, settings=None, workers=1):
     if workers == 1:
         return __main(bind, connection_handler)
     
-    loop = asyncio.new_event_loop()
-    loop.create_task(__start(loop, bind, settings, workers))
-    loop.run_forever()
+    stop_event =  {}
+
+    executor = ProcessPoolExecutor(max_workers=workers)
+
+    started_at = time.time()
     
+    def stop(task: asyncio.Task):
+        print("stoping...")
+        stop_event['stoped'] =  True
+        print("stop event set")
+        executor.shutdown(wait=False, cancel_futures=True)
+
+        runing_time = time.time() - started_at
+        if runing_time > 0 and runing_time < 10:
+            # Wait all multiprocess spawn before kill
+            time.sleep(10 - runing_time)
+        
+        for children in multiprocessing.active_children():
+            os.kill(children.pid, signal.SIGKILL)
+
+        print("loop stop scheduled")
+        sys.exit(0)
+
+
+    loop = asyncio.new_event_loop()
+    loop.set_default_executor(executor)
+    try:
+        task = loop.create_task(__start(loop, bind, settings, workers, stop_event))
+        for sig in [signal.SIGTERM, signal.SIGINT]:
+            loop.add_signal_handler(sig, stop, task)
+        loop.run_forever()
+    except:
+        executor.shutdown()

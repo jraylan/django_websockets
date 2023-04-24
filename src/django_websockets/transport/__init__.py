@@ -9,7 +9,6 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
 from typing import Any, Union
-import grpc as sync_grpc
 import grpc.aio as grpc
 import re
 
@@ -199,9 +198,7 @@ class gRPCRoudRobStub(object):
                     address = self.get_namespaced_address(worker)
                     conn = grpc.insecure_channel(address)
                     stub = wstransport_pb2_grpc.WSGroupManagerStub(conn)
-                    self._stubs[worker] = stub
-                await stub.SendMessage(request)
-                    
+                    self._stubs[worker] = stub                    
             return wstransport_pb2.WSResponse(ack=True)
 
         return wstransport_pb2.WSResponse(ack=False)
@@ -234,9 +231,16 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
     
     @property
     def graceful(self):
-        return self.config.num_connections or 0
+        return self.config.gareceul or 0
     
-    async def SendMessage(self, request, context):
+    async def group_add(self, group, consumer):
+        await super().group_add(group, consumer)
+
+    async def group_discard(self, group, consumer):
+        await super().group_discard(group, consumer)
+
+
+    async def SendMessage(self, request, context=None):
         message = GroupMessage(
             request.message.type,
             request.message.message
@@ -272,18 +276,26 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
     
     @property
     def connection(self):
-        if self.__connection:
+        if self.__connection and self.__stub:
             return self.__connection
         
         if self.role in [SERVER, FORWARDER]:
-            self.__connection = grpc.server(
-                futures.ThreadPoolExecutor(max_workers=self.num_connections))
+            self.__connection = grpc.server(maximum_concurrent_rpcs=100)
             self.__connection.add_insecure_port(self.address)
-            self.__stub = wstransport_pb2_grpc.add_WSGroupManagerServicer_to_server(
+            wstransport_pb2_grpc.add_WSGroupManagerServicer_to_server(
                 self, self.__connection)
+            
+            if self.role is SERVER and self._namespace:
+                address = self.config.address
+                conn = grpc.insecure_channel(address)
+                self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(
+                    conn)
+            else:
+                self.__stub = self
         else:
-            self.__connection = sync_grpc.insecure_channel(self.address)
-            self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(self.__connection)
+            self.__connection = grpc.insecure_channel(self.address)
+            self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(
+                self.__connection)
         return self.__connection
     
 
@@ -294,19 +306,17 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
 
         # If its a SERVER, we don't need to call RPC
         # (What about horizontaly scaling???)
-        if self.role is SERVER:
-            return await super().group_send(group, message)
-        
-        elif self.role is FORWARDER:
-            self.forward_stub.SendMessage(
+        if self.role is FORWARDER:
+            await self.forward_stub.SendMessage(
                 wstransport_pb2.WSSendMessageRequest(
                     group=group,
                     message=wstransport_pb2.WSMessage(
                         **message
                     )))
-        
+        elif self.role is SERVER and not self._namespace:
+            return await super().group_send(message)
         else:
-            self.stub.SendMessage(
+            await self.stub.SendMessage(
                 wstransport_pb2.WSSendMessageRequest(
                     group=group,
                     message=wstransport_pb2.WSMessage(

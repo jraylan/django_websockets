@@ -1,8 +1,9 @@
 import asyncio
+from functools import partial
 from typing import Dict, NoReturn, Set
 import warnings
 from django_websockets.consumers import BaseConsumer
-from django_websockets.utils import async_partial
+
 from django_websockets.groups import GroupMessage
 
 class BaseGroupBackend(object):
@@ -52,7 +53,7 @@ class BaseGroupBackend(object):
         queue = asyncio.Queue()
     
         # Callback to remove queue from list
-        on_stop = async_partial(self.__on_stop, group_name, queue)
+        on_stop = partial(self.__on_stop, group_name, queue)
 
         self.__group_listeners[group_name].add(queue)
         
@@ -70,8 +71,11 @@ class BaseGroupBackend(object):
         group_name = self.__get_group_name(group_name)
 
         async with self.__group_listeners_lock:
-            await consumer._stop_listen_to_group(group_name)
-            await self.__on_stop(group_name, consumer)
+            try:
+                await consumer._stop_listen_to_group(group_name, False)
+                await self.__on_stop(group_name, consumer)
+            except RuntimeError:
+                pass
 
     async def group_message(self, name, message: GroupMessage):
         """

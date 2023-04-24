@@ -1,6 +1,6 @@
 import inspect
 import traceback
-from typing import AsyncIterable, Awaitable, Callable, Dict, Iterable, Set, Type, Union
+from typing import AsyncIterable, Awaitable, Callable, Coroutine, Dict, Iterable, Set, Type, Union
 import warnings
 import websockets
 from websockets.server import WebSocketServerProtocol
@@ -8,7 +8,7 @@ from websockets.typing import Data
 import asyncio
 import functools
 from django_websockets.groups import GroupMessage
-from django_websockets.utils import async_partial
+
 
 
 class StopConsumer(Exception): ...
@@ -40,6 +40,11 @@ class BaseConsumer(object):
             return int(self.get_process_message_timeout())
         except:
             return 0
+
+    @property
+    def channel_layer(self):
+        from django_websockets.transport import get_channel_layer
+        return get_channel_layer()
 
     async def __process(self, message: GroupMessage):
         if not isinstance(message, GroupMessage):
@@ -105,7 +110,7 @@ class BaseConsumer(object):
             
         return True
 
-    async def _stop_listen_to_group(self, group_name:str):
+    async def _stop_listen_to_group(self, group_name:str, run_callback=True):
         """
         Pop the task from the groups and listeners maps and wait for the task to finish
         """
@@ -114,8 +119,9 @@ class BaseConsumer(object):
             callback = self.__group_callbacks.pop(group_name, None)
             self.__group_queues.pop(group_name, None)
             
-        if callback:
-            await asyncio.wait_for(callback(), timeout=1)
+        if run_callback and callback:
+            callback_coroutine = callback()
+            await callback_coroutine
         
         return group_name
 
@@ -299,7 +305,7 @@ class BaseConsumer(object):
 
         async def app(websocket, *args, **kwargs):
             consumer = cls(**initkwargs)
-            consumer.send = async_partial(consumer.__send, websocket)
+            consumer.send = functools.partial(consumer.__send, websocket)
             functools.update_wrapper(consumer.send, websocket.send)
             return await consumer(websocket, *args, **kwargs)
 
