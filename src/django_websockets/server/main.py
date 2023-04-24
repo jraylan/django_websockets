@@ -8,6 +8,7 @@ from typing import Dict
 import signal
 import websockets
 import sys
+import os
 from django_websockets.middlewares.utils import database_sync_to_async
 import django_websockets.server.arguments as arguments
 from django_websockets.server.handler import connection_handler, master_handler
@@ -26,7 +27,7 @@ def __main(bind: arguments.WebsocketBindAddress, handler, settings=None, namespa
     from django_websockets.transport import get_channel_layer, channel_layers
     
     async def run():
-
+        loop = asyncio.get_running_loop()
         if settings:
             import django
             import os
@@ -53,11 +54,11 @@ def __main(bind: arguments.WebsocketBindAddress, handler, settings=None, namespa
                     
                 target = f"{bind.address}:{bind.port + worker_index}"
                 server = websockets.serve(
-                    handler, bind.address, bind.port + worker_index)
+                    handler, bind.address, bind.port + worker_index, loop=loop)
             else:
                 target = f"{bind.address}:{bind.port}"
                 server = websockets.serve(
-                    handler, bind.address, bind.port)
+                    handler, bind.address, bind.port, loop=loop)
                 
 
         
@@ -65,18 +66,17 @@ def __main(bind: arguments.WebsocketBindAddress, handler, settings=None, namespa
 
         def run_channel_layer(layer):
             if namespace == 'master':
-                return asyncio.ensure_future(get_channel_layer(using=layer).as_forwarder(namespace=namespace, workers_queue=workers_list))
+                return get_channel_layer(using=layer).as_forwarder(namespace=namespace, workers_queue=workers_list)
             else:
-                return asyncio.ensure_future(get_channel_layer(using=layer).as_server(namespace=namespace))
+                return get_channel_layer(using=layer).as_server(namespace=namespace)
 
         try:
             async with server:
-
                 futures_stack = [
                     run_channel_layer(layer)
                     for layer in channel_layers
                 ]
-                await asyncio.wait(futures_stack, return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.gather(*futures_stack, return_exceptions=True)
 
         except asyncio.CancelledError:
             pass
@@ -176,7 +176,6 @@ async def __start(loop:asyncio.BaseEventLoop, bind: arguments.WebsocketBindAddre
 def main(bind: arguments.WebsocketBindAddress, settings=None, workers=1):
     if settings:
         import django
-        import os
         os.environ.setdefault("DJANGO_SETTINGS_MODULE", settings)
         django.setup()
     

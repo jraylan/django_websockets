@@ -10,6 +10,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
 from typing import Any, Union
 import grpc.aio as grpc
+import grpc as sync_grpc
 import re
 
 
@@ -198,7 +199,9 @@ class gRPCRoudRobStub(object):
                     address = self.get_namespaced_address(worker)
                     conn = grpc.insecure_channel(address)
                     stub = wstransport_pb2_grpc.WSGroupManagerStub(conn)
-                    self._stubs[worker] = stub                    
+                    self._stubs[worker] = stub
+                await stub.SendMessage(request)
+
             return wstransport_pb2.WSResponse(ack=True)
 
         return wstransport_pb2.WSResponse(ack=False)
@@ -276,26 +279,28 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
     
     @property
     def connection(self):
-        if self.__connection and self.__stub:
+        if self.__connection:
             return self.__connection
         
         if self.role in [SERVER, FORWARDER]:
-            self.__connection = grpc.server(maximum_concurrent_rpcs=100)
+            self.__connection = grpc.server(
+                maximum_concurrent_rpcs=self.num_connections)
             self.__connection.add_insecure_port(self.address)
             wstransport_pb2_grpc.add_WSGroupManagerServicer_to_server(
                 self, self.__connection)
+            self.__stub = self
             
-            if self.role is SERVER and self._namespace:
-                address = self.config.address
-                conn = grpc.insecure_channel(address)
-                self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(
-                    conn)
-            else:
-                self.__stub = self
+            if self.role is SERVER:
+                if self._namespace:
+                    # If is server and has namespace, stub is the forwarder server
+                    address = self.config.address or "unix:/tmp/rpc.socket"
+                    self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(
+                        sync_grpc.insecure_channel(address))
         else:
-            self.__connection = grpc.insecure_channel(self.address)
+            self.__connection = sync_grpc.insecure_channel(self.address)
             self.__stub = wstransport_pb2_grpc.WSGroupManagerStub(
                 self.__connection)
+            
         return self.__connection
     
 
@@ -304,19 +309,29 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
         Broadcast a message 
         '''
 
-        # If its a SERVER, we don't need to call RPC
-        # (What about horizontaly scaling???)
         if self.role is FORWARDER:
+            # Fowards the message to to all workers
             await self.forward_stub.SendMessage(
                 wstransport_pb2.WSSendMessageRequest(
                     group=group,
                     message=wstransport_pb2.WSMessage(
                         **message
                     )))
-        elif self.role is SERVER and not self._namespace:
-            return await super().group_send(message)
+        elif self.role is SERVER:
+            if self._namespace:
+                # If it has namespace, redirext message to forwarder
+                self.stub.SendMessage(
+                    wstransport_pb2.WSSendMessageRequest(
+                        group=group,
+                        message=wstransport_pb2.WSMessage(
+                            **message
+                        )))
+            else:
+                # Otherwise, dispatch to groups
+                return print("2.2", await super().group_send(message))
         else:
-            await self.stub.SendMessage(
+            # Send message to the forwarder/server
+            self.stub.SendMessage(
                 wstransport_pb2.WSSendMessageRequest(
                     group=group,
                     message=wstransport_pb2.WSMessage(
@@ -324,6 +339,15 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
                     )))
     
     async def __call__(self, namespace, workers_queue=None):
+        '''
+        Starts the layer
+
+        *namespace*: The namespace of the current layer. Used for multi
+        workers.
+
+        *workers_queue*: list of current workers
+
+        '''
         try:
             self._namespace = namespace
             self._workers_queue = workers_queue
@@ -335,6 +359,7 @@ class gGPCTransportLayer(BaseTransportLayer, wstransport_pb2_grpc.WSGroupManager
 
             return self.role
         except Exception as e:
+            traceback.print_exc()
             return e
 
     async def stop(self):
