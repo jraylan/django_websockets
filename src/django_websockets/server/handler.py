@@ -53,8 +53,8 @@ async def handle_connection(bind, worker_queue, extra_headers, path, client_sock
                 _recv_from_worker(server_socket, client_socket),
             )
     except ConnectionRefusedError:
-        await asyncio.sleep(1)
-        return await handle_connection(bind, worker_queue, extra_headers, path, client_socket)
+        await asyncio.sleep(0.1)
+        raise StopConsumer
     else:
         return connection
 
