@@ -81,7 +81,7 @@ class ChatConsumer(BaseConsumer):
             self
         )
 
-        session_started = True
+        self.session_started = True
 
     async def reject(self):
         # Do any cleaning here
